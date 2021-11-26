@@ -7,6 +7,7 @@
 #include <thread>
 #include <new>
 
+#include "log.h"
 #include "ObjectFreeList.h"
 #include "serverError.h"
 #include "stack.h"
@@ -69,7 +70,7 @@ private:
 		
 		stSession(unsigned int sendBufferSize = 1, unsigned int recvBufferSize = 1):
 			_sendBuffer(sendBufferSize), _recvBuffer(recvBufferSize){
-			_sessionID = (unsigned __int64)this;
+			_sessionID = 0;
 			_sock = NULL;
 			_ip = 0;
 			_port = 0;
@@ -77,16 +78,20 @@ private:
 			_ioCnt = 0;
 			ZeroMemory(&_sendOverlapped, sizeof(OVERLAPPED));
 			ZeroMemory(&_recvOverlapped, sizeof(OVERLAPPED));
-			InitializeSRWLock(&_lock);
+			InitializeCriticalSection(&_lock);
 			_beDisconnect = false;
 		}
 
+		~stSession(){
+			DeleteCriticalSection(&_lock);
+		}
+
 		void lock(){
-			AcquireSRWLockExclusive(&_lock);
+			EnterCriticalSection(&_lock);
 		}
 
 		void unlock(){
-			ReleaseSRWLockExclusive(&_lock);
+			LeaveCriticalSection(&_lock);
 		}
 
 		// ID의 상위 21비트는 세션 메모리에 대한 재사용 횟수
@@ -111,7 +116,7 @@ private:
 		OVERLAPPED _sendOverlapped;
 		OVERLAPPED _recvOverlapped;
 
-		SRWLOCK _lock;
+		CRITICAL_SECTION _lock;
 
 		bool _beDisconnect;
 	};
@@ -126,7 +131,7 @@ private:
 	unsigned __int64 _sessionCnt;
 
 	unsigned __int64 _sessionPtrMask;
-	unsigned __int64 _sessionIDMask;
+	unsigned __int64 _sessionAllocCntMask;
 
 	int _sendBufferSize;
 	int _recvBufferSize;
@@ -139,6 +144,12 @@ private:
 
 	HANDLE _iocp;
 
+	// free list에서 할당할 때 사용
+	HANDLE _heap;
+
+	// logger
+	CLog log;
+
 	void sendPost(stSession* session);
 	void recvPost(stSession* session);
 
@@ -146,5 +157,8 @@ private:
 	static unsigned __stdcall acceptFunc(void* args);
 
 	void checkCompletePacket(unsigned __int64 sessionID, CRingBuffer* recvBuffer);
+
+	void release(unsigned __int64 sessionID);
+
 
 };

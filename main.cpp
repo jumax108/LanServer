@@ -10,6 +10,7 @@ int main(){
 	
 	server._iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 1);
 	_beginthreadex(nullptr, 0, echoFunc, &server, 0, nullptr);
+	_beginthreadex(nullptr, 0, echoFunc, &server, 0, nullptr);
 
 	try{
 		server.start(L"serverConfig.txt");

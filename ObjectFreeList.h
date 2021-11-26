@@ -6,6 +6,7 @@ class CAllocList;
 
 #define allocObject() _allocObject(__FILEW__, __LINE__)
 #define freeObject(x) _freeObject(x, __FILEW__, __LINE__)
+#define freeObjectNotReAlloc(x) _freeObjectNotReAlloc(x, __FILEW__, __LINE__)
 
 template<typename T>
 struct stAllocNode {
@@ -18,7 +19,6 @@ struct stAllocNode {
 		underFlowCheck = (void*)0xF9F9F9F9;
 		overFlowCheck = (void*)0xF9F9F9F9;
 #endif
-		ZeroMemory(&data, sizeof(T));
 	}
 
 	// f9로 초기화해서 언더플로우 체크합니다.
@@ -52,18 +52,22 @@ class CObjectFreeList
 {
 public:
 
-	CObjectFreeList(int _capacity = 0);
+	CObjectFreeList(HANDLE heap, int _capacity = 0);
 	~CObjectFreeList();
 
 	T* _allocObject(const wchar_t*, int);
 
 	int _freeObject(T* data, const wchar_t*, int);
 
+	int _freeObjectNotReAlloc(T* data, const wchar_t*, int);
+
 	inline unsigned int getCapacity() { return _capacity; }
 	inline unsigned int getUsedCount() { return _usedCnt; }
 
 private:
 
+	// 메모리 할당, 해제를 위한 힙
+	HANDLE _heap;
 
 	// 사용 가능한 노드를 리스트의 형태로 저장합니다.
 	// 할당하면 제거합니다.
@@ -95,7 +99,7 @@ private:
 	// freeList 소멸자에서 메모리 정리용으로 사용합니다.
 
 	// 배열로 new한 포인터들
-	stSimpleListNode* arrAllocList;
+	stSimpleListNode* _arrAllocList;
 
 	// 실제로 stNode 를 윈도우에서 할당받는 곳입니다.
 	// 배열로 할당받습니다.
@@ -119,21 +123,23 @@ public:
 	template<typename T>
 	void resize();
 
-	CAllocList(unsigned int cap = 10) {
-		_cap = 10;
+	CAllocList(HANDLE heap, unsigned int cap = 10) {
+		_cap = cap;
 		_size = 0;
-		_arr = new void* [cap];
-
+		_heap = heap;
+		_arr = (void**)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(void*) * cap);
 	}
 	~CAllocList() {
-		delete[] _arr;
+		HeapFree(_heap, 0, _arr);
 	}
-
-
+	
 	template<typename T>
 	friend class CObjectFreeList;
 
 private:
+
+	// 메모리 할당, 해제를 위한 힙
+	HANDLE _heap;
 
 	void** _arr;
 	unsigned int _cap;
@@ -156,7 +162,7 @@ void CAllocList::resize() {
 	void** oldArr = _arr;
 
 	_cap *= 2;
-	_arr = new void* [_cap];
+	_arr = (void**)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(void*) * _cap);
 
 	for (int arrCnt = 0; arrCnt < _size; ++arrCnt) {
 		_arr[arrCnt] = oldArr[arrCnt];
@@ -177,26 +183,29 @@ void CAllocList::resize() {
 
 		node->allocListPtr = (void**)(arrPtr | firstBit);
 
-		//((stAllocNode<T>*)(_arr[arrCnt]))->allocListPtr = &_arr[arrCnt];
 	}
 
-	delete[](oldArr);
+	HeapFree(_heap, 0, _arr);
 }
 
 template <typename T>
-CObjectFreeList<T>::CObjectFreeList(int size) {
+CObjectFreeList<T>::CObjectFreeList(HANDLE heap, int size) {
 
-	arrAllocList = nullptr;
+	_arrAllocList = nullptr;
 	_freeNode = nullptr;
 
 	_capacity = size;
 	_usedCnt = 0;
 
+	_heap = heap;
+
 	if (size == 0) {
 		return;
 	}
 
-	_ptrList = new CAllocList(_capacity);
+	// _ptrList = new CAllocList(_capacity);
+	_ptrList = (CAllocList*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(CAllocList));
+	new (_ptrList) CAllocList(heap, _capacity);
 
 	actualArrayAlloc(_capacity);
 	stAllocNode<T> node;
@@ -229,11 +238,11 @@ CObjectFreeList<T>::~CObjectFreeList() {
 	}
 
 
-	while (arrAllocList != nullptr) {
-		stSimpleListNode* nextNode = arrAllocList->next;
-		delete[](stAllocNode<T>*)(arrAllocList->ptr);
-		delete arrAllocList;
-		arrAllocList = nextNode;
+	while (_arrAllocList != nullptr) {
+		stSimpleListNode* nextNode = _arrAllocList->next;
+		HeapFree(_heap, 0, _arrAllocList->ptr);
+		HeapFree(_heap, 0, _arrAllocList);
+		_arrAllocList = nextNode;
 	}
 
 
@@ -268,13 +277,26 @@ T* CObjectFreeList<T>::_allocObject(const wchar_t* fileName, int line) {
 
 	_freeNode = _freeNode->nextNode;
 
-	//new (&(allocNode->data)) T();
-
 	return &(allocNode->data);
 }
 
 template <typename T>
 int CObjectFreeList<T>::_freeObject(T* data, const wchar_t* fileName, int line) {
+
+	stAllocNode<T>* usedNode = (stAllocNode<T>*)(((char*)data) + _dataPtrToNodePtr);
+
+	_freeObjectNotReAlloc(data, fileName, line);
+	
+	usedNode->nextNode = _freeNode;
+	_freeNode = usedNode;
+	_usedCnt -= 1;
+
+
+	return 0;
+}
+
+template <typename T>
+int CObjectFreeList<T>::_freeObjectNotReAlloc(T* data, const wchar_t* fileName, int line) {
 
 	stAllocNode<T>* usedNode = (stAllocNode<T>*)(((char*)data) + _dataPtrToNodePtr);
 
@@ -322,28 +344,29 @@ int CObjectFreeList<T>::_freeObject(T* data, const wchar_t* fileName, int line) 
 	usedNode->freeSourceFileName = fileName;
 	usedNode->freeLine = line;
 
-	usedNode->nextNode = _freeNode;
-
-	_freeNode = usedNode;
 	_usedCnt -= 1;
 
-	//data->~T();
-
 	return 0;
+
 }
 
 template<typename T>
 stAllocNode<T>* CObjectFreeList<T>::actualArrayAlloc(int size) {
 
-	stAllocNode<T>* nodeArr = new stAllocNode<T>[size];
+	//stAllocNode<T>* nodeArr = new stAllocNode<T>[size];
+	stAllocNode<T>* nodeArr = (stAllocNode<T>*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(stAllocNode<T>) * size);
 
-	stSimpleListNode* arrAllocNode = new stSimpleListNode;
+	//stSimpleListNode* arrAllocNode = new stSimpleListNode;
+	stSimpleListNode* arrAllocNode = (stSimpleListNode*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(stSimpleListNode));
+
 	arrAllocNode->ptr = nodeArr;
-	arrAllocNode->next = arrAllocList;
-	arrAllocList = arrAllocNode;
-
-	stAllocNode<T>* nodeEnd = nodeArr + size;
+	arrAllocNode->next = _arrAllocList;
+	_arrAllocList = arrAllocNode;
+	
+	void* nodeEnd = nodeArr + size;
 	for (stAllocNode<T>* nodeIter = nodeArr;;) {
+	
+		new (nodeIter) stAllocNode<T>();
 
 		stAllocNode<T>* node = nodeIter;
 		++nodeIter;
@@ -369,5 +392,4 @@ void CObjectFreeList<T>::resize() {
 	_capacity <<= 1;
 
 }
-
 #endif

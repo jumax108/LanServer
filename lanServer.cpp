@@ -17,46 +17,91 @@ CLanServer::CLanServer(){
 	_iocp = NULL;
 
 	_sessionPtrMask = 0x000007FFFFFFFFFF;
-	_sessionIDMask  = 0xFFFFF80000000000;
+	_sessionAllocCntMask  = 0xFFFFF80000000000;
+
+	log.setDirectory(L"log");
+	log.setPrintGroup(LOG_GROUP::LOG_ERROR | LOG_GROUP::LOG_SYSTEM);
 }
 
 bool CLanServer::disconnect(unsigned __int64 sessionID){
 	
 	stSession* session = (stSession*)(sessionID & _sessionPtrMask);
+	
+	session->lock(); {
 
-	SOCKET sock = session->_sock;
+		SOCKET* sock = &session->_sock;
 
-	closesocket(sock);
+		closesocket(*sock);
 
-	session->_beDisconnect = true;
+		*sock = NULL;
+
+		session->_beDisconnect = true;
+
+		log(L"disconnect.txt", LOG_GROUP::LOG_DEBUG, L"sock: %I64d, id: 0x%I64x", sock, sessionID);
+
+	} session->unlock();
 
 	return true;
 
 }
 
-bool CLanServer::sendPacket(unsigned __int64 sessionID, CProtocolBuffer* packet){
+void CLanServer::release(unsigned __int64 sessionID){
 
-	stSession* session = (stSession*)(sessionID & _sessionPtrMask);
-	CRingBuffer* sendBuffer = &session->_sendBuffer;
+	sessionFreeListLock();{
+
+		stSession* session = (stSession*)(sessionID & _sessionPtrMask);
+		
+		unsigned __int64 sessionAllocCnt = (sessionID & _sessionAllocCntMask) >> 43;
+		
+		if(sessionAllocCnt >= 2097151){
+			_sessionFreeList->freeObjectNotReAlloc(session);
+			log(L"release.txt", LOG_GROUP::LOG_SYSTEM, L"sock: %I64d, id: 0x%I64x, allocCnt: %I64d, sessionPtr: %x%I64x", session->_sock, sessionID, sessionAllocCnt, session);
+
+		} else {
+			_sessionFreeList->freeObject(session);
+			
+		}
+		
+		_sessionCnt -= 1;
+
+	} sessionFreeListUnlock();
+
+}
+
+bool CLanServer::sendPacket(unsigned __int64 sessionID, CProtocolBuffer* packet){
 
 	stHeader header;
 	unsigned short packetSize = (unsigned short)packet->getUsedSize();
 	char* packetBuf = packet->getFrontPtr();
 	header.size = packetSize;
+	
+	stSession* session = (stSession*)(sessionID & _sessionPtrMask);
+	
+	CRingBuffer* sendBuffer;
 
-	unsigned int freeSize = sendBuffer->getFreeSize();
+	session->lock(); {
+	
+		if(session->_beDisconnect == true || session->_sessionID != sessionID){
+			onError(SERVER_ERROR::NO_SESSION_BY_ID, L"no session");
+			log(L"sendPacket.txt", LOG_GROUP::LOG_DEBUG, L"sock: %I64d, id: 0x%I64x", session->_sock, sessionID);
+			session->unlock();
+			return false;
+		}
 
-	sendBuffer->pushLock(); {
+		sendBuffer = &session->_sendBuffer;
+		unsigned int freeSize = sendBuffer->getFreeSize();
 
 		sendBuffer->push(sizeof(stHeader), (char*)&header);
 		sendBuffer->push(packetSize, packetBuf);
 
-	} sendBuffer->pushUnlock();
-
-	bool isSent = session->_isSent;
-	if(isSent == false){
-		sendPost(session);
-	}
+		log(L"sendPacket.txt", LOG_GROUP::LOG_DEBUG, L"sock: %I64d, id: 0x%I64x, packetSize: %d", session->_sock, sessionID, packetSize);
+			
+		bool isSent = session->_isSent;
+		if(isSent == false){
+			sendPost(session);
+		}
+	
+	} session->unlock();
 
 	return true;
 
@@ -105,10 +150,10 @@ unsigned CLanServer::completionStatusFunc(void *args){
 		if(&session->_recvOverlapped == overlapped){
 			// recv 완료
 			
-			//wprintf(L"recved %d\n", session->_ioCnt);
-
 			unsigned __int64 sessionID = session->_sessionID;
 			CRingBuffer *recvBuffer = &session->_recvBuffer;
+
+			server->log(L"recv.txt", LOG_GROUP::LOG_DEBUG, L"id: 0x%I64X, sock:%d , transferred: %d", sessionID, session->_sock , transferred);
 
 			recvBuffer->moveRear(transferred);
 
@@ -121,15 +166,14 @@ unsigned CLanServer::completionStatusFunc(void *args){
 
 		short* ioCnt = &session->_ioCnt;
 		InterlockedDecrement16(ioCnt);
+		
+		session->lock(); {
+			if(*ioCnt == 0 && session->_beDisconnect == true){
 
-		if(*ioCnt == 0 && session->_beDisconnect == true){
-			//wprintf(L"free %d\n", session->_ioCnt);
-			server->sessionFreeListLock();{
-				server->_sessionFreeList->freeObject(session);
-				server->_sessionCnt -= 1;
-				wprintf(L"disconnect: %d\n", session->_sessionID);
-			} server->sessionFreeListUnlock();
-		}
+				server->release(session->_sessionID);
+
+			}
+		} session->unlock();
 
 	}
 
@@ -179,6 +223,7 @@ unsigned CLanServer::acceptFunc(void* args){
 				*sessionCnt += 1;
 			} server->sessionFreeListUnlock();
 			stSession* session = sessionFreeList->allocObject();
+
 			unsigned __int64 sessionID = session->_sessionID;
 
 			// ID의 상위 21비트는 세션 메모리에 대한 재사용 횟수
@@ -191,9 +236,11 @@ unsigned CLanServer::acceptFunc(void* args){
 
 				new (session) stSession(sendBufferSize, recvBufferSize);
 
+				session->_sessionID = (unsigned __int64)session;
+
 			} else {
 
-				unsigned __int64 sessionIDMask = server->_sessionIDMask;
+				unsigned __int64 sessionIDMask = server->_sessionAllocCntMask;
 
 				sessionID &= sessionIDMask;
 
@@ -202,12 +249,19 @@ unsigned CLanServer::acceptFunc(void* args){
 			sessionID = ((sessionID >> 43) + 1) << 43;
 			sessionID |= (unsigned __int64)session;
 
-			session->_sessionID = sessionID;
+			session->lock(); {
+			
+				session->_sessionID = sessionID;
+				session->_beDisconnect = false;
+
+			} session->unlock();
+
 			session->_ip = ip;
 			session->_port = port;
 			session->_isSent = false;
-			session->_sock = sock;
-			session->_beDisconnect = false;
+			session->_sock = sock;		
+
+			server->log(L"accept.txt", LOG_GROUP::LOG_DEBUG, L"[accept] session: 0x%I64x, sock: %I64d\n", sessionID, sock);
 
 			CRingBuffer* recvBuffer = &session->_recvBuffer;
 			CRingBuffer* sendBuffer = &session->_sendBuffer;
@@ -221,6 +275,7 @@ unsigned CLanServer::acceptFunc(void* args){
 
 			server->recvPost(session);
 
+
 		}
 	}
 
@@ -229,39 +284,38 @@ unsigned CLanServer::acceptFunc(void* args){
 
 void CLanServer::recvPost(stSession* session){
 	
-
 	short* ioCnt = &session->_ioCnt;
 	InterlockedIncrement16(ioCnt);
-	
-	//wprintf(L"recv %d\n",*ioCnt);
 
-	CRingBuffer* recvBuffer = &session->_recvBuffer;
-	SOCKET sock = session->_sock;
 	OVERLAPPED* overlapped = &session->_recvOverlapped;
-	unsigned __int64 sessionID = session->_sessionID;
-
+	
 	WSABUF wsaBuf[2];
 	int wsaCnt = 1;
 
-	int rear = recvBuffer->rear();
-	int front = recvBuffer->front();
-	char* directPushPtr = recvBuffer->getDirectPush();
-	int directFreeSize = recvBuffer->getDirectFreeSize();
-	int freeSize = recvBuffer->getFreeSize();
-	char* bufStartPtr = recvBuffer->getBufferStart();
+	session->lock(); {
 
-	wsaBuf[0].buf = directPushPtr;
-	wsaBuf[0].len = directFreeSize;
+		CRingBuffer* recvBuffer = &session->_recvBuffer;
+		unsigned __int64 sessionID = session->_sessionID;
 
-	if(front <= rear){
-		wsaBuf[1].buf = bufStartPtr;
-		wsaBuf[1].len = front;
-		wsaCnt = 2;
-	}
+		int rear = recvBuffer->rear();
+		int front = recvBuffer->front();
+		char* directPushPtr = recvBuffer->getDirectPush();
+		int directFreeSize = recvBuffer->getDirectFreeSize();
+		char* bufStartPtr = recvBuffer->getBufferStart();
 
-	int recvResult;
-	int recvError;
-	{
+		wsaBuf[0].buf = directPushPtr;
+		wsaBuf[0].len = directFreeSize;
+
+		if(front <= rear){
+			wsaBuf[1].buf = bufStartPtr;
+			wsaBuf[1].len = front;
+			wsaCnt = 2;
+		}
+
+		int recvResult;
+		int recvError;
+	
+		SOCKET sock = session->_sock;
 		unsigned int flag = 0;
 		recvResult = WSARecv(sock, wsaBuf, wsaCnt, nullptr, (LPDWORD)&flag, overlapped, nullptr);
 		if(recvResult == SOCKET_ERROR){
@@ -269,66 +323,56 @@ void CLanServer::recvPost(stSession* session){
 			if(recvError != WSA_IO_PENDING){
 				InterlockedDecrement16(ioCnt);
 				if(*ioCnt == 0){
-					sessionFreeListLock();{
-						_sessionFreeList->freeObject(session);
-						_sessionCnt -= 1;
-					} sessionFreeListUnlock();
+					release(session->_sessionID);
 				}
+
 				disconnect(sessionID);
 
-				if(recvError == 10054){
-					wprintf(L"recv error: %d\n", recvError);
+				if(recvError != 10054){
+					log(L"recv.txt", LOG_GROUP::LOG_DEBUG, L"session: 0x%I64x, sock: %I64d, wsaCnt: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x\n", sessionID, sock, wsaCnt, wsaBuf[0], wsaBuf[1]);
 				}
-				wprintf(L"recv fail, ioCnt: %d\n",*ioCnt);
+
+				session->unlock();
 				return ;
 			}
 		}
-	} 
+
+	} session->unlock();
 
 }
 
 void CLanServer::sendPost(stSession* session){
 	
-	bool* sent = &session->_isSent;
-	CRingBuffer* sendBuffer = &session->_sendBuffer;
-
-	sendBuffer->popLock(); {
+	OVERLAPPED* overlapped = &session->_sendOverlapped;
 	
-		short* ioCnt = &session->_ioCnt;
-		InterlockedIncrement16(ioCnt);
-		//wprintf(L"send %d\n",*ioCnt);
+	short* ioCnt = &session->_ioCnt;
+	InterlockedIncrement16(ioCnt);
+	
+	WSABUF wsaBuf[2];
+	int wsaCnt = 1;
+
+	session->lock(); {
+
+		bool* sent = &session->_isSent;
+		CRingBuffer* sendBuffer = &session->_sendBuffer;
 
 		if(*sent == true){
-			//wprintf(L"send fail %d\n", *ioCnt);
-			sendBuffer->popUnlock();
 			InterlockedDecrement16(ioCnt);
 			if(*ioCnt == 0){
-				sessionFreeListLock();{
-					_sessionFreeList->freeObject(session);
-					_sessionCnt -= 1;
-				} sessionFreeListUnlock();
+				release(session->_sessionID);
 			}
+			session->unlock();
 			return ;
 		}
 		*sent = true;
 
-
-		SOCKET sock = session->_sock;
-		OVERLAPPED* overlapped = &session->_sendOverlapped;
 		unsigned __int64 sessionID = session->_sessionID;
-
-		int usedSize = sendBuffer->getUsedSize();
 
 		int front = sendBuffer->front();
 		int rear = sendBuffer->rear();
-
 		char* directFrontPtr = sendBuffer->getDirectFront();
 		int directUsedSize = sendBuffer->getDirectUsedSize();
-		
 		char* bufStartPtr = sendBuffer->getBufferStart();
-
-		WSABUF wsaBuf[2];
-		int wsaCnt = 1;
 
 		wsaBuf[0].buf = directFrontPtr;
 		wsaBuf[0].len = directUsedSize;
@@ -341,34 +385,34 @@ void CLanServer::sendPost(stSession* session){
 
 		int sendResult;
 		int sendError;
-		{
-			sendResult = WSASend(sock, wsaBuf, wsaCnt, nullptr, 0, overlapped, nullptr);
-			if(sendResult == SOCKET_ERROR){
-				sendError = WSAGetLastError();
-				if(sendError != WSA_IO_PENDING){
-					InterlockedDecrement16(ioCnt);
-					if(*ioCnt == 0){
-						sessionFreeListLock();{
-							_sessionFreeList->freeObject(session);
-							_sessionCnt -= 1;
-						} sessionFreeListUnlock();
-					}
-					*sent = false;
-					disconnect(sessionID);
-					sendBuffer->popUnlock();
-					wprintf(L"send error: %d\n", sendError);
-					wprintf(L"send fail %d\n", *ioCnt);
-					return ;
+
+		SOCKET sock = session->_sock;
+		sendResult = WSASend(sock, wsaBuf, wsaCnt, nullptr, 0, overlapped, nullptr);
+		if(sendResult == SOCKET_ERROR){
+			sendError = WSAGetLastError();
+			if(sendError != WSA_IO_PENDING){
+				InterlockedDecrement16(ioCnt);
+				if(*ioCnt == 0){
+					release(session->_sessionID);
 				}
+				*sent = false;
+				log(L"send.txt", LOG_GROUP::LOG_DEBUG, L"session: 0x%I64x, sock: %I64d, wsaCnt: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x\n", sessionID, sock, wsaCnt, wsaBuf[0], wsaBuf[1]);
+				disconnect(sessionID);
+				session->unlock();
+				return ;
 			}
 		}
+
+	} session->unlock();
 	
-	} sendBuffer->popUnlock();
 }
 
 void CLanServer::start(const wchar_t* configFileName){
 
 	CStringParser settingParser(configFileName);
+
+	// 힙 생성
+	_heap = HeapCreate(0, 0, 0);
 
 	// 세팅 파일에서 필요한 데이터 수집
 	wchar_t* serverIP;
@@ -482,7 +526,7 @@ void CLanServer::start(const wchar_t* configFileName){
 
 	// session 배열 초기화
 	{
-		_sessionFreeList = new CObjectFreeList<stSession>((int)_sessionNum);
+		_sessionFreeList = new CObjectFreeList<stSession>(_heap, (int)_sessionNum);
 	}
 
 
@@ -517,8 +561,6 @@ void CLanServer::start(const wchar_t* configFileName){
 unsigned __int64 CLanServer::getSessionCount(){
 	
 	return _sessionCnt;
-
-	return 0;
 	
 }
 
