@@ -1,6 +1,6 @@
 #pragma once
 
-#define push(size, buffer) pushData(size, buffer, __LINE__, __FILEW__)
+//#define push(size, buffer) pushData(size, buffer, __LINE__, __FILEW__)
 
 class CRingBuffer {
 

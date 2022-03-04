@@ -4,7 +4,7 @@ class CProtocolBuffer {
 
 public:
 
-	CProtocolBuffer(unsigned int size);
+	CProtocolBuffer(unsigned int size = 500);
    ~CProtocolBuffer();
 
 #pragma region("operator<<")
@@ -18,11 +18,11 @@ public:
 	CProtocolBuffer* operator<<(int data);
 	CProtocolBuffer* operator<<(unsigned int data);
 
-	CProtocolBuffer* operator<<(const __int64& data);
-	CProtocolBuffer* operator<<(const unsigned __int64& data);
+	CProtocolBuffer* operator<<(const __int64 data);
+	CProtocolBuffer* operator<<(const unsigned __int64 data);
 
 	CProtocolBuffer* operator<<(float data);
-	CProtocolBuffer* operator<<(const double& data);
+	CProtocolBuffer* operator<<(const double data);
 #pragma endregion
 
 #pragma region("operator>>")
@@ -48,24 +48,50 @@ public:
 	bool popData(unsigned int size, unsigned char* data);
 	bool popDataW(unsigned int size, wchar_t* data);
 
-	int getUsedSize();
-	int getFreeSize();
+	inline int getUsedSize(){
+		return _rear - _front;
+	}
+	inline int getFreeSize(){
+		return _capacity - _rear;
+	}
 
-	char* getRearPtr();
-	char* getFrontPtr();
+	inline char* getRearPtr(){
+		return &_buffer[_rear];
+	}
 
-	void moveRear(unsigned int size);
-	void moveFront(unsigned int size);
+	inline char* getFrontPtr(){
+		return &_buffer[_front];
+	}
 
-	void frontSetZero();
+	inline void moveRear(unsigned int size){
+		_rear += size;
+	}
+	inline void moveFront(unsigned int size){
+		_front += size;
+	}
+	
+	inline void frontSetZero(){
+		_front = 0;
+	}
 
-private:
+	inline void clear(){
+		_front = 0;
+		_rear = 0;
+	}
 
-	char* _buffer;
+	inline char* getBufStart(){
+		return _buffer;
+	}
+	
+	void resize(unsigned int cap, bool writeFile = true);
+
+protected:
+
+public:	char* _buffer;
 	unsigned int _capacity;
 	unsigned int _front;
 	unsigned int _rear;
+	static int _cnt;
 
-	void resize();
 
 };

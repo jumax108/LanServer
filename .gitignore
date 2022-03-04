@@ -3,7 +3,6 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=windows,c++,visualstudio
 
 *.bmp
-*.txt
 
 ### C++ ###
 # Prerequisites
@@ -103,8 +102,10 @@ x86/
 bld/
 [Bb]in/
 [Oo]bj/
-[Ll]og/
-[Ll]ogs/
+objectFile/
+objectFiles/
+objFile/
+objectFiles/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
@@ -435,3 +436,7 @@ FodyWeavers.xsd
 *.tlog
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,c++,visualstudio
+
+
+*.txt
+*.dmp

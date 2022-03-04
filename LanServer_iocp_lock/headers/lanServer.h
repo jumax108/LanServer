@@ -6,15 +6,27 @@
 #include <stdexcept>
 #include <thread>
 #include <new>
+#include <windows.h>
+#include <crtdbg.h>
+#include <DbgHelp.h>
 
+#include "dump.h"
 #include "log.h"
-#include "ObjectFreeList.h"
+#include "ObjectFreeListTLS.h"
 #include "serverError.h"
 #include "stack.h"
 #include "stringParser.h"
 #include "ringBuffer.h"
 #include "protocolBuffer.h"
+#include "lockFreeQueue.h"
+#include "lockFreeStack.h"
+#include "packetPtr_LanServer.h"
+#include "queue.h"
 #include "common.h"
+
+extern CDump dump;
+
+#define MAX_PACKET 100
 
 class CLanServer{
 
@@ -33,7 +45,7 @@ public:
 	// sessionID 에 해당하는 연결 해제합니다.
 	bool disconnect(unsigned __int64 sessionID); 
 	// sessinoID 에 해당하는 세션에 데이터 전송합니다.
-	bool sendPacket(unsigned __int64 sessionID, CProtocolBuffer* packet);
+	bool sendPacket(unsigned __int64 sessionID, CPacketPtrLan packet);
 	 
 	// 클라이언트가 접속을 시도한 상태에서 호출됩니다.
 	// 반환된 값에 따라 연결을 허용합니다.
@@ -46,7 +58,7 @@ public:
 	virtual void onClientLeave(unsigned __int64 sessionID) = 0;
 
 	// 클라이언트에게 데이터를 전송하면 호출됩니다.
-	virtual void onRecv(unsigned __int64 sessionID, CProtocolBuffer* pakcet) = 0;
+	virtual void onRecv(unsigned __int64 sessionID, CPacketPtr pakcet) = 0;
 	// 클라이언트에게서 데이터를 전달받으면 호출됩니다.
 	virtual void onSend(unsigned __int64 sessionID, int sendSize) = 0;
 
@@ -69,7 +81,8 @@ private:
 	struct stSession{
 		
 		stSession(unsigned int sendBufferSize = 1, unsigned int recvBufferSize = 1):
-			_sendBuffer(sendBufferSize), _recvBuffer(recvBufferSize){
+			_recvBuffer(5000), _sendQueue(5000)
+		{
 			_sessionID = 0;
 			_sock = NULL;
 			_ip = 0;
@@ -78,24 +91,23 @@ private:
 			_ioCnt = 0;
 			ZeroMemory(&_sendOverlapped, sizeof(OVERLAPPED));
 			ZeroMemory(&_recvOverlapped, sizeof(OVERLAPPED));
+			_packets = new CPacketPtr[MAX_PACKET];
+			ZeroMemory(_packets, sizeof(CPacketPtr) * MAX_PACKET);
+			_packetCnt = 0;
+
+			_recvPosted = false;
+
 			InitializeCriticalSection(&_lock);
-			_beDisconnect = false;
+
 		}
 
 		~stSession(){
+			delete[] _packets;
 			DeleteCriticalSection(&_lock);
 		}
 
-		void lock(){
-			EnterCriticalSection(&_lock);
-		}
-
-		void unlock(){
-			LeaveCriticalSection(&_lock);
-		}
-
-		// ID의 상위 21비트는 세션 메모리에 대한 재사용 횟수
-		// 하위 43비트는 세션 메모리에 대한 주소
+		// ID의 하위 6바이트는 세션 메모리에 대한 재사용 횟수
+		// 상위 2바이트는 세션 인덱스
 		unsigned __int64 _sessionID; // 서버 가동 중에는 고유한 세션 ID
 	
 		SOCKET _sock;
@@ -103,34 +115,47 @@ private:
 		unsigned int _ip;
 		unsigned short _port;
 
-		CRingBuffer _sendBuffer;
+		CQueue<CPacketPtr> _sendQueue;
 		CRingBuffer _recvBuffer;
-
-		bool _isSent; // send를 1회로 제한하기 위한 플래그
-
+		
+		// send를 1회로 제한하기 위한 플래그
+		bool _isSent;
+		
+		// 총 32비트로 릴리즈 플래그 변화와 ioCnt가 0인지 동시에 체크하기 위함
+		alignas(32) bool _beRelease;
+		// 32비트 채우기 용 변수로 사용하지 않음
+		private: char _temp = 0;
 		// recv, send io가 요청되어 있는 횟수입니다.
 		// recv는 항상 요청되어있기 때문에 ioCnt는 최소 1입니다.
 		// ioCnt가 0이되면 연결이 끊긴 상태입니다.
-		short _ioCnt; 
+		public: short _ioCnt; 
 
+		// recv 함수 중복 호출 방지용
+		bool _recvPosted;
+		
 		OVERLAPPED _sendOverlapped;
 		OVERLAPPED _recvOverlapped;
 
-		CRITICAL_SECTION _lock;
+		CPacketPtr* _packets;
+		int _packetCnt;
 
-		bool _beDisconnect;
+		CRITICAL_SECTION _lock;
+		void lock(){
+			EnterCriticalSection(&_lock);
+		}
+		void unlock(){
+			LeaveCriticalSection(&_lock);
+		}
 	};
 
-	CObjectFreeList<stSession>* _sessionFreeList;
-	SRWLOCK _sessionFreeListLock;
+	stSession* _sessionArr;
 
-	void sessionFreeListLock();
-	void sessionFreeListUnlock();
+	CLockFreeStack<unsigned short>* _sessionIndexStack;
 
 	unsigned __int64 _sessionNum;
 	unsigned __int64 _sessionCnt;
 
-	unsigned __int64 _sessionPtrMask;
+	unsigned __int64 _sessionIndexMask;
 	unsigned __int64 _sessionAllocCntMask;
 
 	int _sendBufferSize;
@@ -138,6 +163,7 @@ private:
 
 	HANDLE _acceptThread;
 
+	int _workerThreadNum;
 	HANDLE* _workerThread;
 
 	SOCKET _listenSocket;
@@ -150,15 +176,16 @@ private:
 	// logger
 	CLog log;
 
+	// thread 정리용 event
+	HANDLE _stopEvent;
+
 	void sendPost(stSession* session);
 	void recvPost(stSession* session);
 
 	static unsigned __stdcall completionStatusFunc(void* args);
 	static unsigned __stdcall acceptFunc(void* args);
 
-	void checkCompletePacket(unsigned __int64 sessionID, CRingBuffer* recvBuffer);
+	void checkCompletePacket(stSession* session, CRingBuffer* recvBuffer);
 
 	void release(unsigned __int64 sessionID);
-
-
 };
