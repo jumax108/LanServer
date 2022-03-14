@@ -44,8 +44,7 @@ public:
 	void start(const wchar_t* serverIP, unsigned short serverPort,
 			int createWorkerThreadNum, int runningWorkerThreadNum,
 			unsigned short maxSessionNum, bool onNagle,
-			unsigned int sendBufferSize, unsigned int recvBufferSize,
-			unsigned int sendBufferMaxCapacity, unsigned int recvBufferMaxCapacity); 
+			unsigned int sendBufferSize, unsigned int recvBufferSize); 
 	// 모든 메모리를 정리하고 서버를 종료합니다.
 	void stop(); 
 	
@@ -95,6 +94,8 @@ private:
 
 	HANDLE _iocp;
 
+	int _sendBufferSize;
+	int _recvBufferSize;
 
 	// logger
 	CLog log;
@@ -170,7 +171,7 @@ CLanServer::stSession::stSession(unsigned int sendQueueSize, unsigned int recvBu
 
 	_recvPosted = false;
 
-	InitializeCriticalSection(&_lock);
+	InitializeCriticalSectionAndSpinCount(&_lock, 0);
 }
 
 CLanServer::stSession::~stSession(){

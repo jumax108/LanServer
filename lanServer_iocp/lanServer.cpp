@@ -26,7 +26,7 @@ CLanServer::CLanServer(){
 
 bool CLanServer::disconnect(unsigned __int64 sessionID){
 	
-	unsigned short sessionIndex = sessionID & _sessionIndexMask;
+	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
 	stSession* session = &_sessionArr[sessionIndex];
 
 	CancelIoEx(_iocp, &session->_recvOverlapped);
@@ -40,14 +40,12 @@ bool CLanServer::disconnect(unsigned __int64 sessionID){
 
 void CLanServer::release(unsigned __int64 sessionID){
 
-	unsigned short sessionIndex = sessionID & _sessionIndexMask;
+	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
 	stSession* session = &_sessionArr[sessionIndex];
-
-	session->lock(); {
+	
+	EnterCriticalSection(&session->_lock);  {
 	
 		unsigned int* ioCntAndRelease = (unsigned int*)&session->_beRelease;
-
-		unsigned __int64 sessionAllocCnt = (sessionID & _sessionAllocCntMask) >> 16;
 
 		// send buffer 안에 있는 패킷들 delete
 		
@@ -62,26 +60,20 @@ void CLanServer::release(unsigned __int64 sessionID){
 		}
 
 		closesocket(session->_sock);
-	
-		if(sessionAllocCnt >= 0xFFFFFFFFFFFF){
-			log(L"release.txt", LOG_GROUP::LOG_SYSTEM, L"sock: %I64d, id: 0x%I64x, allocCnt: %I64d, sessionPtr: %x%I64x", session->_sock, sessionID, sessionAllocCnt, session);
-		} else {
-			_sessionIndexStack->push(sessionIndex);
-		}
 
 		_sessionCnt -= 1;
 
-	} session->unlock();
+	} LeaveCriticalSection(&session->_lock);
 	
 
 }
 
 bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 	
-	unsigned short sessionIndex = sessionID & _sessionIndexMask;
+	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
 	stSession* session = &_sessionArr[sessionIndex];
 
-	session->lock(); {
+	EnterCriticalSection(&session->_lock); {
 		
 		CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 		packet.incRef();
@@ -92,7 +84,7 @@ bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 			sendPost(session);
 		}
 
-	} session->unlock();
+	} LeaveCriticalSection(&session->_lock);
 
 	return true;
 
@@ -104,7 +96,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 
 	HANDLE iocp = server->_iocp;
 
-	while(1){
+	for(;;){
 		
 		unsigned int transferred;
 		stSession* session;
@@ -116,7 +108,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 			break;			
 		}
 		
-		session->lock(); { 
+		EnterCriticalSection(&session->_lock); { 
 
 			unsigned __int64 sessionID = session->_sessionID;
 			SOCKET sock = session->_sock;
@@ -167,7 +159,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 				server->release(sessionID);
 			}
 
-		} session->unlock();
+		} LeaveCriticalSection( &session->_lock );
 	}
 
 	return 0;
@@ -189,7 +181,7 @@ unsigned CLanServer::acceptFunc(void* args){
 		
 		DWORD stopEventResult = WaitForSingleObject(server->_stopEvent, 0);
 		if(WAIT_OBJECT_0 == stopEventResult){
-			// stop thread
+			// thread stop
 			break;
 		}
 
@@ -218,7 +210,7 @@ unsigned CLanServer::acceptFunc(void* args){
 			// 동접 최대치 체크
 			/////////////////////////////////////////////////////////
 			if(isSessionFull == true){
-				server->onError(1, L"서버에 세팅된 동시접속자 최대치에 도달하여 새로운 연결을 받을 수 없습니다.");
+				server->onError(1, L"세팅된 동시접속자 최대치 도달하여 신규 접속 불가");
 				closesocket(sock);
 				continue;
 			}
@@ -231,13 +223,13 @@ unsigned CLanServer::acceptFunc(void* args){
 			// session array의 index 확보
 			unsigned short sessionIndex = 0;
 			CStack<int>* sessionIndexStack = server->_sessionIndexStack;
-			sessionIndexStack->pop(&sessionIndex);
+			sessionIndexStack->pop((int*)&sessionIndex);
 
 			// session 확보
 			stSession* sessionArr = server->_sessionArr;
 			stSession* session = &sessionArr[sessionIndex];
 
-			session->lock(); {
+			EnterCriticalSection(&session->_lock); {
 
 				unsigned __int64 sessionID = session->_sessionID;
 
@@ -256,9 +248,7 @@ unsigned CLanServer::acceptFunc(void* args){
 
 				} else {
 					// 세션 재사용
-					unsigned __int64 sessionIDMask = server->_sessionAllocCntMask;
-
-					sessionID &= sessionIDMask;
+					sessionID &= SESSION_ALLOC_COUNT_MASK;
 
 				}
 			
@@ -295,7 +285,7 @@ unsigned CLanServer::acceptFunc(void* args){
 
 				server->recvPost(session);
 
-			} session->unlock();
+			} LeaveCriticalSection(&session->_lock);
 
 			/////////////////////////////////////////////////////////
 
@@ -310,7 +300,7 @@ void CLanServer::recvPost(stSession* session){
 	
 	unsigned __int64 sessionID = session->_sessionID;
 
-	short* ioCnt = &session->_ioCnt;
+	unsigned char* ioCnt = &session->_ioCnt;
 	*ioCnt += 1;
 
 	/////////////////////////////////////////////////////////
@@ -453,9 +443,11 @@ void CLanServer::sendPost(stSession* session){
 void CLanServer::start(const wchar_t* serverIP, unsigned short serverPort,
 			int createWorkerThreadNum, int runningWorkerThreadNum,
 			unsigned short maxSessionNum, bool onNagle,
-			unsigned int sendBufferSize, unsigned int recvBufferSize,
-			unsigned int sendBufferMaxCapacity, unsigned int recvBufferMaxCapacity){
+			unsigned int sendBufferSize, unsigned int recvBufferSize){
 		
+	_sendBufferSize = sendBufferSize;
+	_recvBufferSize = recvBufferSize;
+
 	// wsa startup
 	int startupResult;
 	int startupError;
@@ -608,7 +600,7 @@ void CLanServer::checkCompletePacket(stSession* session, CRingBuffer* recvBuffer
 
 			recvBuffer->popBuffer(payloadSize);
 			
-			unsigned short sessionIndex = sessionID & _sessionIndexMask;
+			unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
 			stSession* session = &_sessionArr[sessionIndex];
 
 			packet.moveFront(sizeof(stHeader));

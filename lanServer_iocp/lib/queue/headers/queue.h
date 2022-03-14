@@ -56,6 +56,8 @@ private:
 
 		struct stNode{
 
+			friend CQueue;
+
 	public:
 		inline stNode(T& data){
 			_data = data;
@@ -76,6 +78,17 @@ private:
 				_popLine = line;
 			}
 		#endif
+
+		stNode& operator=(stNode& node){
+			_data = node._data;
+			#if defined(QUEUE_LOG)
+				_pushFile = node._pushFile;
+				_pushLine = node._pushLine;
+				_popFile  = node._popFile;
+				_popLine  = node._popLine;
+			#endif
+		}
+
 	private:
 		T _data;
 		#if defined(QUEUE_LOG)
@@ -184,7 +197,7 @@ bool CQueue<T>::front(T* out) {
 		return false;
 	}
 
-	*out = _data[_front];
+	*out = _data[_front]._data;
 
 	return true;
 
