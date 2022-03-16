@@ -61,9 +61,15 @@ public:
 	void frontSetZero();
 	void rearSetZero();
 
-	inline char* getFrontPtr();
-	inline char* getRearPtr();
-	inline char* getBufStart();
+	inline char* getFrontPtr(){
+		return _buffer + _front;
+	}
+	inline char* getRearPtr(){
+		return _buffer + _rear;
+	}
+	inline char* getBufStart(){
+		return _buffer;
+	}
 	
 	void resize(unsigned int cap, bool writeFile = true);
 

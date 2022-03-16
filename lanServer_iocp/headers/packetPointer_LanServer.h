@@ -7,6 +7,11 @@
 
 class CPacketPtr_Lan: public CPacketPointer{
 public:
-	virtual void setHeader(void* args);
+
+	CPacketPtr_Lan();
+
+	virtual void setHeader();
+	virtual void incoding(){}
+	virtual void decoding(){}
 
 };

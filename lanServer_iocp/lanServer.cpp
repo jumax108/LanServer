@@ -1,3 +1,5 @@
+
+
 #include "headers/lanServer.h"
 
 HANDLE CLanServer::_heap = NULL;
@@ -17,49 +19,38 @@ CLanServer::CLanServer(){
 
 	_listenSocket = NULL;
 	_iocp = NULL;
+
+	_sendCnt = 0;
+	_recvCnt = 0;
 	
-	log.setDirectory(L"log");
-	log.setPrintGroup(LOG_GROUP::LOG_ERROR | LOG_GROUP::LOG_SYSTEM);
+	_sendTPS = 0;
+	_recvTPS = 0;
+	
+	_log.setDirectory(L"log");
+	_log.setPrintGroup(LOG_GROUP::LOG_ERROR | LOG_GROUP::LOG_SYSTEM);
 
 	_stopEvent = CreateEvent(nullptr, true, false, L"stopEvent");
 }
 
-bool CLanServer::disconnect(unsigned __int64 sessionID){
+void CLanServer::disconnect(unsigned __int64 sessionID){
 	
-	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
-	stSession* session = &_sessionArr[sessionIndex];
-
-	CancelIoEx(_iocp, &session->_recvOverlapped);
-	CancelIoEx(_iocp, &session->_sendOverlapped);
-
-	log(L"disconnect.txt", LOG_GROUP::LOG_DEBUG, L"sock: %I64d, id: 0x%I64x", session->_sock, sessionID);
-
-	return true;
-
-}
-
-void CLanServer::release(unsigned __int64 sessionID){
-
 	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
 	stSession* session = &_sessionArr[sessionIndex];
 	
 	EnterCriticalSection(&session->_lock);  {
 	
-		unsigned int* ioCntAndRelease = (unsigned int*)&session->_beRelease;
-
-		// send buffer 안에 있는 패킷들 delete
-		
+		// send buffer 안에 있는 패킷들 제거		
 		CQueue<CPacketPointer>* sendBuffer = &session->_sendQueue;
 		while(sendBuffer->size() > 0){
-
 			CPacketPointer packetPtr;
 			sendBuffer->front(&packetPtr);
 			sendBuffer->pop();
 			packetPtr.decRef();
-
 		}
 
 		closesocket(session->_sock);
+
+		_sessionIndexStack->push(sessionIndex);
 
 		_sessionCnt -= 1;
 
@@ -67,7 +58,6 @@ void CLanServer::release(unsigned __int64 sessionID){
 	
 
 }
-
 bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 	
 	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
@@ -77,7 +67,7 @@ bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 		
 		CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 		packet.incRef();
-		packet.setHeader(nullptr);
+		packet.setHeader();
 		sendQueue->push(packet);
 
 		if(session->_isSent == false){
@@ -99,20 +89,27 @@ unsigned CLanServer::completionStatusFunc(void *args){
 	for(;;){
 		
 		unsigned int transferred;
-		stSession* session;
 		OVERLAPPED* overlapped;
-		GetQueuedCompletionStatus(iocp, (LPDWORD)&transferred, (PULONG_PTR)&session, &overlapped, INFINITE);
+		unsigned __int64 sessionID;
+		GetQueuedCompletionStatus(iocp, (LPDWORD)&transferred, (PULONG_PTR)&sessionID, &overlapped, INFINITE);
 		
 		if(overlapped == nullptr){
-			printf("overlapped nullptr\n");
 			break;			
 		}
 		
-		EnterCriticalSection(&session->_lock); { 
+		unsigned short sessionIndex = (unsigned short)(sessionID & SESSION_INDEX_MASK);
+		stSession* session = &server->_sessionArr[sessionIndex];
 
-			unsigned __int64 sessionID = session->_sessionID;
+		EnterCriticalSection(&session->_lock); { 
+		do {
+
+			if(sessionID != session->_sessionID || session->_beRelease == true){
+				break;
+			}
+
 			SOCKET sock = session->_sock;
 
+			// send 완료 처리
 			if(&session->_sendOverlapped == overlapped){
 		
 				int packetNum = session->_packetCnt;
@@ -122,28 +119,23 @@ unsigned CLanServer::completionStatusFunc(void *args){
 				for(; packetIter != packetEnd; ++packetIter){
 					packetIter->decRef();
 				}
-			
 				session->_packetCnt = 0;
 			
-				session->_isSent = false;
-			
-				CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
-			
-				if(sendQueue->size() != 0){
+				InterlockedAdd((LONG*)&server->_sendCnt, packetNum);
 
-					if(session->_isSent == false){
-						server->sendPost(session);
-					}
+				CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
+				if(sendQueue->size() > 0){
+					server->sendPost(session);
+				} else {
+					session->_isSent = false;
 				}
 			
 			}
+			
+			// recv 완료 처리
+			else if(&session->_recvOverlapped == overlapped){
 
-			if(&session->_recvOverlapped == overlapped){
-
-				// recv 완료
 				CRingBuffer* recvBuffer = &session->_recvBuffer;
-
-				server->log(L"recv.txt", LOG_GROUP::LOG_DEBUG, L"id: 0x%I64X, sock:%d , transferred: %d", sessionID, session->_sock , transferred);
 
 				recvBuffer->moveRear(transferred);
 
@@ -154,10 +146,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 			
 			}
 
-			session->_ioCnt -= 1;		
-			if(session->_ioCnt == 0){
-				server->release(sessionID);
-			}
+		} while (false);
 
 		} LeaveCriticalSection( &session->_lock );
 	}
@@ -210,7 +199,7 @@ unsigned CLanServer::acceptFunc(void* args){
 			// 동접 최대치 체크
 			/////////////////////////////////////////////////////////
 			if(isSessionFull == true){
-				server->onError(1, L"세팅된 동시접속자 최대치 도달하여 신규 접속 불가");
+				server->onError(20000, L"세팅된 동시접속자 최대치 도달하여 신규 접속 불가");
 				closesocket(sock);
 				continue;
 			}
@@ -232,10 +221,11 @@ unsigned CLanServer::acceptFunc(void* args){
 			EnterCriticalSection(&session->_lock); {
 
 				unsigned __int64 sessionID = session->_sessionID;
+				unsigned __int64 sessionUseCnt = 0;
 
 				// ID의 상위 6바이트는 세션 메모리에 대한 재사용 횟수
 				// 하위 2바이트는 세션 인덱스
-
+				
 				// session id 세팅
 				if(sessionID == 0){
 					// 세션 최초 사용
@@ -248,38 +238,24 @@ unsigned CLanServer::acceptFunc(void* args){
 
 				} else {
 					// 세션 재사용
-					sessionID &= SESSION_ALLOC_COUNT_MASK;
+					sessionUseCnt = sessionID & SESSION_ALLOC_COUNT_MASK;
 
 				}
 			
-				sessionID = ((sessionID >> 16) + 1) << 16;
-				sessionID |= (unsigned __int64)sessionIndex;
+				sessionID = (sessionUseCnt + 0x10000) | (unsigned __int64)sessionIndex;
 				session->_sessionID = sessionID;
 				session->_ip = ip;
 				session->_port = port;
 				session->_isSent = false;
 				session->_sock = sock;		
-				session->_recvPosted = false;
-
-				server->log(L"accept.txt", LOG_GROUP::LOG_DEBUG, L"[accept] session: 0x%I64x, sock: %I64d\n", sessionID, sock);
+				session->_beRelease = false;
 
 				CRingBuffer* recvBuffer = &session->_recvBuffer;
 				CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 
-				// recv, send 버퍼 초기화
-				recvBuffer->popBuffer(recvBuffer->getUsedSize());
-				while(sendQueue->size() > 0){
-					CPacketPointer packet;
-					sendQueue->front(&packet);
-					sendQueue->pop();
-					packet.decRef();
-				}
-				
-				session->_beRelease = false;
-
 				server->_sessionCnt += 1;
 
-				CreateIoCompletionPort((HANDLE)sock, iocp, (ULONG_PTR)session, 0);
+				CreateIoCompletionPort((HANDLE)sock, iocp, (ULONG_PTR)sessionID, 0);
 			
 				server->onClientJoin(ip, port, sessionID);
 
@@ -299,9 +275,6 @@ unsigned CLanServer::acceptFunc(void* args){
 void CLanServer::recvPost(stSession* session){
 	
 	unsigned __int64 sessionID = session->_sessionID;
-
-	unsigned char* ioCnt = &session->_ioCnt;
-	*ioCnt += 1;
 
 	/////////////////////////////////////////////////////////
 	// recv buffer 정보를 wsa buf로 복사
@@ -343,13 +316,8 @@ void CLanServer::recvPost(stSession* session){
 		if(recvError != WSA_IO_PENDING){
 
 			disconnect(sessionID);
-
-			*ioCnt -= 1;
-			if(*ioCnt == 0){
-				release(sessionID);
-			}
 			if(recvError != 10054){
-				log(L"recv.txt", LOG_GROUP::LOG_DEBUG, L"session: 0x%I64x, sock: %I64d, wsaCnt: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x\n", sessionID, sock, wsaCnt, wsaBuf[0], wsaBuf[1]);
+				_log(L"recv.txt", LOG_GROUP::LOG_DEBUG, L"session: 0x%I64x, sock: %I64d, wsaCnt: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x\n", sessionID, sock, wsaCnt, wsaBuf[0], wsaBuf[1]);
 			}
 
 			return ;
@@ -362,9 +330,6 @@ void CLanServer::sendPost(stSession* session){
 	
 	unsigned __int64 sessionID = session->_sessionID;
 
-	unsigned char* ioCnt = &session->_ioCnt;
-	*ioCnt += 1;
-
 	/////////////////////////////////////////////////////////
 	// 보낼 데이터가 있는지 체크
 	/////////////////////////////////////////////////////////
@@ -374,22 +339,18 @@ void CLanServer::sendPost(stSession* session){
 	unsigned int usedSize = sendQueue->size();
 	wsaNum = usedSize;
 	wsaNum = min(wsaNum, MAX_PACKET);
-
-	if(wsaNum == 0){
-		
-		*ioCnt -= 1;
-		if(*ioCnt == 0){
-			release(sessionID);
-		}
-		return ;
-	}
 	/////////////////////////////////////////////////////////
 
+	
+	/////////////////////////////////////////////////////////
+	// send 1회 제한 처리
+	/////////////////////////////////////////////////////////
 	if(session->_isSent == true){
 		return ;
 	}
 	session->_isSent = true;
-	
+	/////////////////////////////////////////////////////////
+
 	/////////////////////////////////////////////////////////
 	// packet을 wsaBuf로 복사
 	/////////////////////////////////////////////////////////
@@ -427,12 +388,8 @@ void CLanServer::sendPost(stSession* session){
 		sendError = WSAGetLastError();
 		if(sendError != WSA_IO_PENDING){
 			disconnect(sessionID);
-			*ioCnt -= 1;
-			if(*ioCnt == 0){
-				release(sessionID);
-			}
 			session->_isSent = false;
-			log(L"send.txt", LOG_GROUP::LOG_SYSTEM, L"session: 0x%I64x, sock: %I64d, wsaNum: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x, error: %d\n", sessionID, sock, wsaNum, wsaBuf[0], wsaBuf[1], sendError);
+			_log(L"send.txt", LOG_GROUP::LOG_SYSTEM, L"session: 0x%I64x, sock: %I64d, wsaNum: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x, error: %d\n", sessionID, sock, wsaNum, wsaBuf[0], wsaBuf[1], sendError);
 			return ;
 		}
 	}	
@@ -447,6 +404,7 @@ void CLanServer::start(const wchar_t* serverIP, unsigned short serverPort,
 		
 	_sendBufferSize = sendBufferSize;
 	_recvBufferSize = recvBufferSize;
+	_sessionNum = maxSessionNum;
 
 	// wsa startup
 	int startupResult;
@@ -534,6 +492,7 @@ void CLanServer::start(const wchar_t* serverIP, unsigned short serverPort,
 		_sessionArr = (stSession*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(stSession) * _sessionNum);
 		new (_sessionIndexStack) CStack<int>(_sessionNum);
 		for(int sessionCnt = _sessionNum - 1; sessionCnt >= 0 ; --sessionCnt){
+			new (&_sessionArr[sessionCnt]) stSession(sendBufferSize, recvBufferSize);
 			_sessionIndexStack->push(sessionCnt);
 		}
 	}
@@ -568,12 +527,6 @@ void CLanServer::start(const wchar_t* serverIP, unsigned short serverPort,
 
 }
 
-unsigned __int64 CLanServer::getSessionCount(){
-	
-	return _sessionCnt;
-	
-}
-
 void CLanServer::checkCompletePacket(stSession* session, CRingBuffer* recvBuffer){
 	
 	unsigned __int64 sessionID = session->_sessionID;
@@ -605,6 +558,7 @@ void CLanServer::checkCompletePacket(stSession* session, CRingBuffer* recvBuffer
 
 			packet.moveFront(sizeof(stHeader));
 
+			InterlockedIncrement((LONG*)&_recvCnt);
 			onRecv(sessionID, packet);
 			packet.decRef();
 
@@ -648,4 +602,54 @@ void CLanServer::stop(){
 	}
 	HeapFree(_heap, 0, _sessionArr);
 	HeapFree(_heap, 0, _workerThread);
+}
+
+unsigned __stdcall CLanServer::tpsCalcFunc(void* args){
+
+	CLanServer* server = (CLanServer*)args;
+
+	int* sendCnt = &server->_sendCnt;
+	int* recvCnt = &server->_recvCnt;
+	int* sendTPS = &server->_sendTPS;
+	int* recvTPS = &server->_recvTPS;
+
+	for(;;){
+
+		*sendTPS = *sendCnt;
+		*recvTPS = *recvCnt;
+
+		InterlockedExchange((LONG*)sendCnt, 0);
+		InterlockedExchange((LONG*)recvCnt, 0);
+
+		Sleep(999);
+
+	}
+
+	return 0;
+}
+
+
+
+CLanServer::stSession::stSession(unsigned int sendQueueSize, unsigned int recvBufferSize):
+	_recvBuffer(recvBufferSize), _sendQueue(sendQueueSize)
+{
+	_sessionID = 0;
+	_sock = NULL;
+	_ip = 0;
+	_port = 0;
+	_isSent = false;
+	_beRelease = false;
+
+	ZeroMemory(&_sendOverlapped, sizeof(OVERLAPPED));
+	ZeroMemory(&_recvOverlapped, sizeof(OVERLAPPED));
+	_packets = (CPacketPointer*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(CPacketPointer) * MAX_PACKET);
+	_packetCnt = 0;
+
+	InitializeCriticalSectionAndSpinCount(&_lock, 0);
+
+}
+
+CLanServer::stSession::~stSession(){
+	HeapFree(_heap, 0, _packets);
+	DeleteCriticalSection(&_lock);
 }

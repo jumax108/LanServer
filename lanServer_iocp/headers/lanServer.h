@@ -6,10 +6,11 @@
 
 #include <thread>
 #include <new>
-#include <windows.h>
+#include <windows.h>	
 
 ///////////////////////////////////////////////////////////////////
 // lib
+#include "objectFreeListTLS/headers/objectFreeListTLS.h"
 #include "dump/headers/dump.h"
 #include "log/headers/log.h"
 #include "protocolBuffer/headers/protocolBuffer.h"
@@ -21,7 +22,7 @@
 #pragma comment(lib, "lib/dump/dump")
 #pragma comment(lib, "lib/log/log")
 #pragma comment(lib, "lib/protocolBuffer/protocolBuffer")
-#pragma comment(lib, "lib/pakcetPointer/packetPointer")
+#pragma comment(lib, "lib/packetPointer/packetPointer")
 #pragma comment(lib, "lib/ringBuffer/ringBuffer")
 ///////////////////////////////////////////////////////////////////
 
@@ -48,11 +49,8 @@ public:
 	// 모든 메모리를 정리하고 서버를 종료합니다.
 	void stop(); 
 	
-	// 현재 접속중인 세션 수를 반환합니다.
-	inline unsigned __int64 getSessionCount();
-	
 	// sessionID 에 해당하는 연결 해제합니다.
-	bool disconnect(unsigned __int64 sessionID); 
+	void disconnect(unsigned __int64 sessionID); 
 	// sessinoID 에 해당하는 세션에 데이터 전송합니다.
 	bool sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet);
 	 
@@ -74,6 +72,16 @@ public:
 	// 에러 상황에서 호출됩니다.
 	virtual void onError(int errorCode, const wchar_t* errorMsg) = 0;
 
+	inline int getSendTPS(){
+		return _sendTPS;
+	}
+	inline int getRecvTPS(){
+		return _recvTPS;
+	}
+	// 현재 접속중인 세션 수를 반환합니다.
+	inline unsigned __int64 getSessionCount(){
+		return _sessionCnt;
+	}
 
 private:
 
@@ -98,20 +106,25 @@ private:
 	int _recvBufferSize;
 
 	// logger
-	CLog log;
+	CLog _log;
 
 	// thread 정리용 event
 	HANDLE _stopEvent;
+
+	HANDLE _tpsCalcThread;
+	int _sendCnt;
+	int _recvCnt;
+	int _sendTPS;
+	int _recvTPS;
 
 	void sendPost(stSession* session);
 	void recvPost(stSession* session);
 
 	static unsigned __stdcall completionStatusFunc(void* args);
 	static unsigned __stdcall acceptFunc(void* args);
+	static unsigned __stdcall tpsCalcFunc(void* args);
 
 	void checkCompletePacket(stSession* session, CRingBuffer* recvBuffer);
-
-	void release(unsigned __int64 sessionID);
 
 	struct stSession{
 		
@@ -122,59 +135,28 @@ private:
 		// 상위 2바이트는 세션 인덱스
 		unsigned __int64 _sessionID; // 서버 가동 중에는 고유한 세션 ID
 	
-		SOCKET _sock;
-	
-		unsigned int _ip;
-		unsigned short _port;
+		CRITICAL_SECTION _lock;
 
 		CQueue<CPacketPointer> _sendQueue;
 		CRingBuffer _recvBuffer;
-		
-		// send를 1회로 제한하기 위한 플래그
-		bool _isSent;
-		
-		// 총 32비트로 릴리즈 플래그 변화와 ioCnt가 0인지 동시에 체크하기 위함
-		alignas(16) bool _beRelease;
-		// recv, send io가 요청되어 있는 횟수입니다.
-		// recv는 항상 요청되어있기 때문에 ioCnt는 최소 1입니다.
-		// ioCnt가 0이되면 연결이 끊긴 상태입니다.
-		public: unsigned char _ioCnt; 
-
-		// recv 함수 중복 호출 방지용
-		bool _recvPosted;
 		
 		OVERLAPPED _sendOverlapped;
 		OVERLAPPED _recvOverlapped;
 
 		CPacketPointer* _packets;
+
+		SOCKET _sock;
+	
 		int _packetCnt;
 
-		CRITICAL_SECTION _lock;
+		unsigned int _ip;
+		unsigned short _port;
+
+		// send를 1회로 제한하기 위한 플래그
+		bool _isSent;
+		
+		// 총 32비트로 릴리즈 플래그 변화와 ioCnt가 0인지 동시에 체크하기 위함
+		bool _beRelease;
+
 	};
 };
-
-CLanServer::stSession::stSession(unsigned int sendQueueSize, unsigned int recvBufferSize):
-	_recvBuffer(recvBufferSize), _sendQueue(sendQueueSize)
-{
-	_sessionID = 0;
-	_sock = NULL;
-	_ip = 0;
-	_port = 0;
-	_isSent = false;
-	_beRelease = false;
-	_ioCnt = 0;
-
-	ZeroMemory(&_sendOverlapped, sizeof(OVERLAPPED));
-	ZeroMemory(&_recvOverlapped, sizeof(OVERLAPPED));
-	_packets = (CPacketPointer*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(CPacketPointer) * MAX_PACKET);
-	_packetCnt = 0;
-
-	_recvPosted = false;
-
-	InitializeCriticalSectionAndSpinCount(&_lock, 0);
-}
-
-CLanServer::stSession::~stSession(){
-	HeapFree(_heap, 0, _packets);
-	DeleteCriticalSection(&_lock);
-}

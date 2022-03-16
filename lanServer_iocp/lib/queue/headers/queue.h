@@ -54,9 +54,8 @@ private:
 
 	HANDLE _heap;
 
-		struct stNode{
-
-			friend CQueue;
+	struct stNode{
+		friend CQueue;
 
 	public:
 		inline stNode(T& data){
@@ -78,17 +77,6 @@ private:
 				_popLine = line;
 			}
 		#endif
-
-		stNode& operator=(stNode& node){
-			_data = node._data;
-			#if defined(QUEUE_LOG)
-				_pushFile = node._pushFile;
-				_pushLine = node._pushLine;
-				_popFile  = node._popFile;
-				_popLine  = node._popLine;
-			#endif
-		}
-
 	private:
 		T _data;
 		#if defined(QUEUE_LOG)
@@ -182,6 +170,8 @@ bool CQueue<T>::_pop(
 	#if defined(QUEUE_LOG)
 		_data[_front].popLog(file, line);
 	#endif
+
+	_data[_front]._data.~T();
 
 	_front = (_front + 1) % _capacity;
 	_size -= 1;
