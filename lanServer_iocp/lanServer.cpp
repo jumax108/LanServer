@@ -112,16 +112,21 @@ unsigned CLanServer::completionStatusFunc(void *args){
 			// send 완료 처리
 			if(&session->_sendOverlapped == overlapped){
 		
+				int packetTotalSize = 0;
+
 				int packetNum = session->_packetCnt;
 				CPacketPointer* packets = session->_packets;
 				CPacketPointer* packetIter = packets;
 				CPacketPointer* packetEnd = packets + packetNum;
 				for(; packetIter != packetEnd; ++packetIter){
+					packetTotalSize += packetIter->getPacketPoolUsage();
 					packetIter->decRef();
 				}
 				session->_packetCnt = 0;
 			
 				InterlockedAdd((LONG*)&server->_sendCnt, packetNum);
+
+				server->onSend(sessionID, packetTotalSize);
 
 				CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 				if(sendQueue->size() > 0){
@@ -212,7 +217,8 @@ unsigned CLanServer::acceptFunc(void* args){
 			// session array의 index 확보
 			unsigned short sessionIndex = 0;
 			CStack<int>* sessionIndexStack = server->_sessionIndexStack;
-			sessionIndexStack->pop((int*)&sessionIndex);
+			sessionIndexStack->front((int*)&sessionIndex);
+			sessionIndexStack->pop();
 
 			// session 확보
 			stSession* sessionArr = server->_sessionArr;
@@ -345,9 +351,6 @@ void CLanServer::sendPost(stSession* session){
 	/////////////////////////////////////////////////////////
 	// send 1회 제한 처리
 	/////////////////////////////////////////////////////////
-	if(session->_isSent == true){
-		return ;
-	}
 	session->_isSent = true;
 	/////////////////////////////////////////////////////////
 
@@ -507,6 +510,11 @@ void CLanServer::start(const wchar_t* serverIP, unsigned short serverPort,
 			onError(iocpError, L"create iocp error");
 			return ;
 		}
+	}
+
+	// tps thread 초기화
+	{
+		_tpsCalcThread = (HANDLE)_beginthreadex(nullptr, 0, CLanServer::tpsCalcFunc, this, 0, nullptr);
 	}
 
 	// worker thread 초기화

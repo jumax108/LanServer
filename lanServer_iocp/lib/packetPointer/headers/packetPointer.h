@@ -6,8 +6,6 @@
 
 #include "common.h"
 
-#include "objectFreeListTLS/headers/objectFreeListTLS.h"
-
 #include "protocolBuffer/headers/protocolBuffer.h"
 #pragma comment(lib, "lib/protocolBuffer/protocolBuffer")
 
@@ -30,10 +28,7 @@ public:
 	CPacketPointer(CPacketPointer& ptr);
 	CPacketPointer& operator=(CPacketPointer& ptr);
 
-	CPacketPointer(){
-		_packet = _freeList->allocObject();
-		_packet->_ref = 1;
-	}
+	CPacketPointer();
 	~CPacketPointer();
 
 	inline char* getBufStart(){ 
@@ -63,9 +58,9 @@ public:
 	void incRef();
 	void decRef();
 
-	virtual void incoding(){}
-	virtual void decoding(){}
-	virtual void setHeader(){}
+	virtual void incoding(void* args){}
+	virtual void decoding(void* args){}
+	virtual void setHeader(void* args){}
 
 	void putData(int size, unsigned char* buf);
 	void popData(int size, unsigned char* buf);

@@ -50,7 +50,7 @@ private:
 	unsigned int _capacity;
 
 	struct stNode{
-
+		friend class CStack;
 	public:
 		inline stNode(T& data){
 			_data = data;
