@@ -147,6 +147,10 @@
     <ClInclude Include="headers\common.h" />
     <ClInclude Include="headers\lanServer.h" />
     <ClInclude Include="headers\packetPointer_LanServer.h" />
+    <ClInclude Include="lib\objectFreeListTLS\headers\common.h" />
+    <ClInclude Include="lib\objectFreeList\headers\common.h" />
+    <ClInclude Include="lib\queue\headers\common.h" />
+    <ClInclude Include="lib\stack\headers\common.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="lanServer.cpp" />

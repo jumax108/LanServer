@@ -121,6 +121,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 				for(; packetIter != packetEnd; ++packetIter){
 					packetTotalSize += packetIter->getPacketPoolUsage();
 					packetIter->decRef();
+					packetIter->~CPacketPointer();
 				}
 				session->_packetCnt = 0;
 			
@@ -362,6 +363,7 @@ void CLanServer::sendPost(stSession* session){
 	int packetNum = wsaNum;
 
 	CPacketPointer packet;
+	packet.decRef();
 
 	for(int packetCnt = 0; packetCnt < packetNum; ++packetCnt){
 		

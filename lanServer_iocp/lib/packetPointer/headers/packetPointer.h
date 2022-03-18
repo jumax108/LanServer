@@ -1,24 +1,33 @@
 #pragma once
 
 #include <Windows.h>
-#include <DbgHelp.h>
-#include <crtdbg.h>
+#include <intrin.h>
 
 #include "common.h"
 
 #include "protocolBuffer/headers/protocolBuffer.h"
 #pragma comment(lib, "lib/protocolBuffer/protocolBuffer")
 
+
 struct stPacket{
 
 	stPacket():_buffer(PROTOCOL_BUFFER_SIZE){
 		_incoded = false;
 		_ref = 0;
+
+		#if defined(PACKET_PTR_DEBUG)
+			returnAdr = nullptr;
+		#endif
+
 	}
 
 	CProtocolBuffer _buffer;
 	bool _incoded;
 	int _ref;
+
+	#if defined(PACKET_PTR_DEBUG)
+		void* returnAdr;
+	#endif
 };
 
 class CPacketPointer{
