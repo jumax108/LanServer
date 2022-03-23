@@ -117,6 +117,7 @@ private:
 	int _sendTPS;
 	int _recvTPS;
 
+
 	void sendPost(stSession* session);
 	void recvPost(stSession* session);
 
@@ -157,6 +158,8 @@ private:
 		
 		// 총 32비트로 릴리즈 플래그 변화와 ioCnt가 0인지 동시에 체크하기 위함
 		bool _beRelease;
-
+		
+		wchar_t* _log[65536];
+		unsigned short _logCnt;
 	};
 };

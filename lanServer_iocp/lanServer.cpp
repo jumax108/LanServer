@@ -39,21 +39,39 @@ void CLanServer::disconnect(unsigned __int64 sessionID){
 	
 	EnterCriticalSection(&session->_lock);  {
 	
+		if(session->_beRelease == true){
+			LeaveCriticalSection(&session->_lock);
+			return ;
+		}
+
+		session->_log[session->_logCnt++] = (wchar_t*)L"enter disconnect";
+		session->_beRelease = true;
+
 		// send buffer 안에 있는 패킷들 제거		
 		CQueue<CPacketPointer>* sendBuffer = &session->_sendQueue;
+		CPacketPointer packetPtr;
+		packetPtr.decRef();
+
 		while(sendBuffer->size() > 0){
-			CPacketPointer packetPtr;
 			sendBuffer->front(&packetPtr);
 			sendBuffer->pop();
 			packetPtr.decRef();
+			packetPtr.~CPacketPointer();
 		}
+
+		CRingBuffer* recvBuffer = &session->_recvBuffer;
+		recvBuffer->moveFront(recvBuffer->getUsedSize());
 
 		closesocket(session->_sock);
 
 		_sessionIndexStack->push(sessionIndex);
-
-		_sessionCnt -= 1;
-
+		
+		InterlockedDecrement64((LONG64*)&_sessionCnt);
+		if(_sessionCnt >= 0xFFFFFFFFFFFFFFF0){
+			CDump::crash();
+		}
+		
+		session->_log[session->_logCnt++] = (wchar_t*)L"leave disconnect";
 	} LeaveCriticalSection(&session->_lock);
 	
 
@@ -65,6 +83,7 @@ bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 
 	EnterCriticalSection(&session->_lock); {
 		
+			session->_log[session->_logCnt++] = (wchar_t*)L"enter send packet";
 		CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 		packet.incRef();
 		packet.setHeader();
@@ -73,6 +92,7 @@ bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 		if(session->_isSent == false){
 			sendPost(session);
 		}
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave send packet";
 
 	} LeaveCriticalSection(&session->_lock);
 
@@ -103,7 +123,17 @@ unsigned CLanServer::completionStatusFunc(void *args){
 		EnterCriticalSection(&session->_lock); { 
 		do {
 
+			
+			session->_log[session->_logCnt++] = (wchar_t*)L"enter completion status func";
+
 			if(sessionID != session->_sessionID || session->_beRelease == true){
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave completion status func(released)";
+				break;
+			}
+
+			if(transferred == 0){
+				server->disconnect(sessionID);
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave completion status func(disconnect)";
 				break;
 			}
 
@@ -112,6 +142,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 			// send 완료 처리
 			if(&session->_sendOverlapped == overlapped){
 		
+			session->_log[session->_logCnt++] = (wchar_t*)L"enter send 완료 처리";
 				int packetTotalSize = 0;
 
 				int packetNum = session->_packetCnt;
@@ -135,11 +166,13 @@ unsigned CLanServer::completionStatusFunc(void *args){
 				} else {
 					session->_isSent = false;
 				}
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave send 완료 처리";
 			
 			}
 			
 			// recv 완료 처리
 			else if(&session->_recvOverlapped == overlapped){
+			session->_log[session->_logCnt++] = (wchar_t*)L"enter recv 완료 처리";
 
 				CRingBuffer* recvBuffer = &session->_recvBuffer;
 
@@ -150,10 +183,12 @@ unsigned CLanServer::completionStatusFunc(void *args){
 
 				server->recvPost(session);
 			
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave recv 완료 처리";
 			}
-
+			
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave completion status func";
 		} while (false);
-
+		
 		} LeaveCriticalSection( &session->_lock );
 	}
 
@@ -257,16 +292,23 @@ unsigned CLanServer::acceptFunc(void* args){
 				session->_sock = sock;		
 				session->_beRelease = false;
 
+				session->_logCnt = 0;
+				session->_log[session->_logCnt++] = (wchar_t*)L"accept func";
+
+
 				CRingBuffer* recvBuffer = &session->_recvBuffer;
 				CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 
-				server->_sessionCnt += 1;
+				InterlockedIncrement64((LONG64*)&server->_sessionCnt);
 
 				CreateIoCompletionPort((HANDLE)sock, iocp, (ULONG_PTR)sessionID, 0);
 			
+				session->_log[session->_logCnt++] = (wchar_t*)L"enter onClient Join";
 				server->onClientJoin(ip, port, sessionID);
+				session->_log[session->_logCnt++] = (wchar_t*)L"leave onClient Join";
 
 				server->recvPost(session);
+				session->_log[session->_logCnt++] = (wchar_t*)L"leave accept func";
 
 			} LeaveCriticalSection(&session->_lock);
 
@@ -280,6 +322,7 @@ unsigned CLanServer::acceptFunc(void* args){
 }
 
 void CLanServer::recvPost(stSession* session){
+	session->_log[session->_logCnt++] = (wchar_t*)L"enter recvPost";
 	
 	unsigned __int64 sessionID = session->_sessionID;
 
@@ -326,15 +369,18 @@ void CLanServer::recvPost(stSession* session){
 			if(recvError != 10054){
 				_log(L"recv.txt", LOG_GROUP::LOG_DEBUG, L"session: 0x%I64x, sock: %I64d, wsaCnt: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x\n", sessionID, sock, wsaCnt, wsaBuf[0], wsaBuf[1]);
 			}
-
+			
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave recvPost";
 			return ;
 		}
 	}
+	session->_log[session->_logCnt++] = (wchar_t*)L"leave recvPost";
 	/////////////////////////////////////////////////////////
 }
 
 void CLanServer::sendPost(stSession* session){
 	
+			session->_log[session->_logCnt++] = (wchar_t*)L"enter sendPost";
 	unsigned __int64 sessionID = session->_sessionID;
 
 	/////////////////////////////////////////////////////////
@@ -395,9 +441,12 @@ void CLanServer::sendPost(stSession* session){
 			disconnect(sessionID);
 			session->_isSent = false;
 			_log(L"send.txt", LOG_GROUP::LOG_SYSTEM, L"session: 0x%I64x, sock: %I64d, wsaNum: %d, wsaBuf[0]: 0x%I64x, wsaBuf[1]: 0x%I64x, error: %d\n", sessionID, sock, wsaNum, wsaBuf[0], wsaBuf[1], sendError);
+		
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave sendPost";
 			return ;
 		}
 	}	
+			session->_log[session->_logCnt++] = (wchar_t*)L"leave sendPost";
 	/////////////////////////////////////////////////////////
 
 }
