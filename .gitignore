@@ -37,6 +37,7 @@
 *.lai
 *.la
 *.a
+*.lib
 
 # Executables
 *.exe
@@ -103,6 +104,10 @@ bld/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+objectFile/
+objectFiles/
+objFile/
+objectFiles/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
