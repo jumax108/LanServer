@@ -1,8 +1,13 @@
 
-mkdir lanServer
+set name="lanServer"
 
-robocopy headers lanServer/headers
-robocopy release lanServer *.pdb
-robocopy release lanServer *.lib
+mkdir %name%
+
+robocopy headers %name%/headers
+robocopy release %name% *.pdb
+robocopy release %name% *.lib
+
+erase release /S /Q
+rd release /S /Q
 
 pause

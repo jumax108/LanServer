@@ -49,20 +49,24 @@ void CLanServer::disconnect(unsigned __int64 sessionID){
 
 		// send buffer 안에 있는 패킷들 제거		
 		CQueue<CPacketPointer>* sendBuffer = &session->_sendQueue;
-		CPacketPointer packetPtr;
-		packetPtr.decRef();
+		int sendQueueSize = sendBuffer->size();
 
-		while(sendBuffer->size() > 0){
-			sendBuffer->front(&packetPtr);
-			sendBuffer->pop();
-			packetPtr.decRef();
-			packetPtr.~CPacketPointer();
-		}
+			for(int packetCnt = 0; packetCnt < sendQueueSize; ++packetCnt){
+				CPacketPointer* packet = &session->_packets[packetCnt];
+
+				sendBuffer->front(packet);
+				sendBuffer->pop();
+
+				packet->decRef();
+				packet->~CPacketPointer();
+			}
 
 		CRingBuffer* recvBuffer = &session->_recvBuffer;
 		recvBuffer->moveFront(recvBuffer->getUsedSize());
 
+		//printf("disconnect socket: %d\n", session->_sock);
 		closesocket(session->_sock);
+		session->_sock = 0;
 
 		_sessionIndexStack->push(sessionIndex);
 		
@@ -83,7 +87,7 @@ bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 
 	EnterCriticalSection(&session->_lock); {
 		
-			session->_log[session->_logCnt++] = (wchar_t*)L"enter send packet";
+		session->_log[session->_logCnt++] = (wchar_t*)L"enter send packet";
 		CQueue<CPacketPointer>* sendQueue = &session->_sendQueue;
 		packet.incRef();
 		packet.setHeader();
@@ -127,7 +131,7 @@ unsigned CLanServer::completionStatusFunc(void *args){
 			session->_log[session->_logCnt++] = (wchar_t*)L"enter completion status func";
 
 			if(sessionID != session->_sessionID || session->_beRelease == true){
-			session->_log[session->_logCnt++] = (wchar_t*)L"leave completion status func(released)";
+				session->_log[session->_logCnt++] = (wchar_t*)L"leave completion status func(released)";
 				break;
 			}
 
@@ -260,6 +264,8 @@ unsigned CLanServer::acceptFunc(void* args){
 			stSession* sessionArr = server->_sessionArr;
 			stSession* session = &sessionArr[sessionIndex];
 
+			InterlockedIncrement((LONG*)&server->_acceptCnt);
+
 			EnterCriticalSection(&session->_lock); {
 
 				unsigned __int64 sessionID = session->_sessionID;
@@ -303,6 +309,8 @@ unsigned CLanServer::acceptFunc(void* args){
 
 				CreateIoCompletionPort((HANDLE)sock, iocp, (ULONG_PTR)sessionID, 0);
 			
+				//printf("accept socket: %d\n", sock);
+
 				session->_log[session->_logCnt++] = (wchar_t*)L"enter onClient Join";
 				server->onClientJoin(ip, port, sessionID);
 				session->_log[session->_logCnt++] = (wchar_t*)L"leave onClient Join";
@@ -408,18 +416,15 @@ void CLanServer::sendPost(stSession* session){
 	session->_packetCnt = wsaNum;
 	int packetNum = wsaNum;
 
-	CPacketPointer packet;
-	packet.decRef();
-
 	for(int packetCnt = 0; packetCnt < packetNum; ++packetCnt){
 		
-		sendQueue->front(&packet);
-		sendQueue->pop();
-		wsaBuf[packetCnt].buf = packet.getBufStart();
-		wsaBuf[packetCnt].len = packet.getPacketSize();
-		packet.decRef();
+		CPacketPointer* packet = &session->_packets[packetCnt];
 
-		session->_packets[packetCnt] = packet;
+		sendQueue->front(packet);
+		sendQueue->pop();
+		wsaBuf[packetCnt].buf = packet->getBufStart();
+		wsaBuf[packetCnt].len = packet->getPacketSize();
+		packet->decRef();
 
 	}
 	/////////////////////////////////////////////////////////
@@ -669,16 +674,21 @@ unsigned __stdcall CLanServer::tpsCalcFunc(void* args){
 
 	int* sendCnt = &server->_sendCnt;
 	int* recvCnt = &server->_recvCnt;
+	int* acceptCnt = &server->_acceptCnt;
+
 	int* sendTPS = &server->_sendTPS;
 	int* recvTPS = &server->_recvTPS;
+	int* acceptTPS = &server->_acceptTPS;
 
 	for(;;){
 
 		*sendTPS = *sendCnt;
 		*recvTPS = *recvCnt;
+		*acceptTPS = *acceptCnt;
 
 		InterlockedExchange((LONG*)sendCnt, 0);
 		InterlockedExchange((LONG*)recvCnt, 0);
+		InterlockedExchange((LONG*)acceptCnt, 0);
 
 		Sleep(999);
 

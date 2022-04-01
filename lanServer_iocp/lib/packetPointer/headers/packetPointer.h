@@ -25,6 +25,8 @@ struct stPacket{
 	bool _incoded;
 	int _ref;
 
+	void* _packetPtr;
+
 	#if defined(PACKET_PTR_DEBUG)
 		void* returnAdr;
 	#endif
@@ -114,8 +116,8 @@ public:
 
 	stPacket* _packet;
 
-protected:
+public:
 
-	static CObjectFreeListTLS<stPacket>* _freeList;
+	static CObjectFreeListTLS<stPacket> _freeList;
 
 };
