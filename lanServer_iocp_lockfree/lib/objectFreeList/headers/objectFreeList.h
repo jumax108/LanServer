@@ -309,20 +309,21 @@ T* CObjectFreeList<T>::_allocObject(
 				allocNode->init();
 			}
 		
-			// 전체 alloc list에 추가
-			// 소멸자에서 일괄적으로 메모리 해제하기 위함
-			stSimpleListNode* totalAllocNode = (stSimpleListNode*)HeapAlloc(_heap, 0, sizeof(stSimpleListNode));
-			stSimpleListNode* totalAllocList;
+			#if defined(OBJECT_FREE_LIST_DEBUG)
+				// 전체 alloc list에 추가
+				// 소멸자에서 일괄적으로 메모리 해제하기 위함
+				stSimpleListNode* totalAllocNode = (stSimpleListNode*)HeapAlloc(_heap, 0, sizeof(stSimpleListNode));
+				stSimpleListNode* totalAllocList;
 
-			do {
+				do {
 
-				totalAllocList = _totalAllocList;
+					totalAllocList = _totalAllocList;
 
-				totalAllocNode->_ptr = allocNode;
-				totalAllocNode->_next = totalAllocList;
+					totalAllocNode->_ptr = allocNode;
+					totalAllocNode->_next = totalAllocList;
 
-			} while( InterlockedCompareExchange64((LONG64*)&_totalAllocList, (LONG64)totalAllocNode, (LONG64)totalAllocList) != (LONG64)totalAllocList );
-
+				} while( InterlockedCompareExchange64((LONG64*)&_totalAllocList, (LONG64)totalAllocNode, (LONG64)totalAllocList) != (LONG64)totalAllocList );
+			#endif
 			_capacity += 1;
 
 			break;

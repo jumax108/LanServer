@@ -61,7 +61,7 @@ private:
 	unsigned int _rear;
 	unsigned int _front;
 
-	wchar_t fileName[40];
+	wchar_t fileName[35];
 
 	HANDLE _heap;
 

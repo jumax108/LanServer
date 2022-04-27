@@ -76,6 +76,8 @@ void CLanServer::release(stSession* session) {
 
 	InterlockedDecrement64((LONG64*)&_sessionCnt);
 
+	this->onClientLeave(session->_sessionID);
+
 	_sessionIndexStack->push(sessionIndex);
 
 }
