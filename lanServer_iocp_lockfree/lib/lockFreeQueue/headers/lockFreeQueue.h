@@ -17,7 +17,7 @@ public:
 	void push(T data);
 	bool pop(T* data);
 
-	unsigned __int64 getSize();
+	__int64 getSize();
 
 private:
 
@@ -32,7 +32,7 @@ private:
 	void* _head;
 	void* _tail;
 
-	unsigned __int64 _size;
+	__int64 _size;
 
 	unsigned __int64 _nodeChangeCnt;
 
@@ -102,7 +102,7 @@ template <typename T>
 bool CLockFreeQueue<T>::pop(T* data){
 	
 	
-	unsigned __int64 size = InterlockedDecrement64((LONG64*)&_size);
+	__int64 size = InterlockedDecrement64((LONG64*)&_size);
 	if(size < 0){
 		InterlockedIncrement64((LONG64*)&_size);
 		return false;
@@ -114,9 +114,9 @@ bool CLockFreeQueue<T>::pop(T* data){
 	stNode* popNode;
 	stNode* headNode;
 
-	T popData;
+	T* popNodeData;
 
-	do{
+	for(;;){
 		
 		head = _head;
 		headNode = (stNode*)((unsigned __int64)head & _pointerMask);
@@ -129,18 +129,21 @@ bool CLockFreeQueue<T>::pop(T* data){
 		}
 		
 		popNode = (stNode*)((unsigned __int64)popPtr & _pointerMask);
-		popData = popNode->_data;
+		popNodeData = &popNode->_data;
 
-	}while(  InterlockedCompareExchange64((LONG64*)&_head, (LONG64)popPtr, (LONG64)head) != (LONG64)head);
+		if(InterlockedCompareExchange64((LONG64*)&_head, (LONG64)popPtr, (LONG64)head) == (LONG64)head){
+			break;
+		}
+	}
+
+	*data = *popNodeData;
 	
-	*data = popData;
-
 	_nodeFreeList.freeObject(headNode);
 
 	return true;
 }
 
 template <typename T>
-unsigned __int64 CLockFreeQueue<T>::getSize(){
+__int64 CLockFreeQueue<T>::getSize(){
 	return _size;
 }

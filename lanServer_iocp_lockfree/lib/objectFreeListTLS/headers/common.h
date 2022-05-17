@@ -1,6 +1,6 @@
 #pragma once
 
-//#define OBJECT_FREE_LIST_TLS_DEBUG
+#define OBJECT_FREE_LIST_TLS_DEBUG
 
 namespace objectFreeListTLS{
 	// T type data 주소에 이 값을 더하면 node 주소가 됩니다.

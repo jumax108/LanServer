@@ -69,9 +69,9 @@ public:
 	void incRef();
 	void decRef();
 
-	virtual void incoding(void* args){}
-	virtual void decoding(void* args){}
-	virtual void setHeader(void* args){}
+	virtual void incoding(){}
+	virtual void decoding(){}
+	virtual void setHeader(){}
 
 	void putData(int size, unsigned char* buf);
 	void popData(int size, unsigned char* buf);

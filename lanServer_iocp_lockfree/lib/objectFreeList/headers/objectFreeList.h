@@ -126,9 +126,6 @@ private:
 	// 현재 할당된 노드 개수
 	unsigned int _usedCnt;
 
-	// 데이터 포인터(stNode->data)에 이 값을 더하면 노드 포인터(stNode)가 된다 !
-	unsigned __int64 _dataPtrToNodePtr;
-
 	// 메모리 정리용
 	// 단순 리스트
 	struct stSimpleListNode {
@@ -175,12 +172,7 @@ CObjectFreeList<T>::CObjectFreeList(bool runConstructor, bool runDestructor, int
 	#if defined(OBJECT_FREE_LIST_DEBUG)
 		log.setDirectory(L"objectFreeList_Log");
 		log.setPrintGroup(LOG_GROUP::LOG_DEBUG);
-	#endif`
-
-	// 실제 노드와 노드의 data와의 거리 계산
-	stAllocNode<T>* tempNode = (stAllocNode<T>*)HeapAlloc(_heap, 0, sizeof(stAllocNode<T>));
-	_dataPtrToNodePtr = (unsigned __int64)tempNode - (unsigned __int64)&tempNode->_data;
-	HeapFree(_heap, 0, tempNode);
+	#endif
 
 	if (size == 0) {
 		return;
@@ -363,7 +355,7 @@ int CObjectFreeList<T>::_freeObject(T* data
 	#endif
 ) {
 
-	stAllocNode<T>* usedNode = (stAllocNode<T>*)(((char*)data) + _dataPtrToNodePtr);
+	stAllocNode<T>* usedNode = (stAllocNode<T>*)(((char*)data) + objectFreeList::DATA_PTR_TO_NODE_PTR);
 	
 	#if defined(OBJECT_FREE_LIST_DEBUG)
 		// 중복 free 체크
@@ -394,7 +386,7 @@ int CObjectFreeList<T>::_freeObject(T* data
 	void* freePtr;
 	void* nextPtr;
 
-	unsigned __int64 nodeChangeCnt = 0;
+	unsigned __int64 nodeChangeCnt;
 
 	_nodeChangeCnt += 1;
 

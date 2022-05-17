@@ -13,14 +13,14 @@ void CPacketPtr_Lan::setHeader() {
 
 	CProtocolBuffer* buffer = &_packet->_buffer;
 
-	stHeader* header = (stHeader*)buffer->getBufStart();
-	header->size = buffer->getUsedSize() - sizeof(stHeader);
+	lanServer::stHeader* header = (lanServer::stHeader*)buffer->getBufStart();
+	header->size = buffer->getUsedSize() - sizeof(lanServer::stHeader);
 
 } 
 
 CPacketPtr_Lan::CPacketPtr_Lan() {
 
-	this->_packet->_buffer.moveRear(sizeof(stHeader));
+	this->_packet->_buffer.moveRear(sizeof(lanServer::stHeader));
 
 	#if defined(PACKET_PTR_LAN_DEBUG)
 		returnAdr = _ReturnAddress();

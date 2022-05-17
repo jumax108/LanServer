@@ -81,6 +81,9 @@ public:
 	inline int getAcceptTPS(){
 		return _acceptTPS;
 	}
+	inline unsigned __int64 getAcceptTotal() {
+		return _acceptTotal;
+	}
 	// 현재 접속중인 세션 수를 반환합니다.
 	inline unsigned __int64 getSessionCount(){
 		return _sessionCnt;
@@ -122,6 +125,7 @@ private:
 	int _recvTPS;
 	int _acceptTPS;
 
+	unsigned __int64 _acceptTotal;
 
 	void sendPost(stSession* session);
 	void recvPost(stSession* session);

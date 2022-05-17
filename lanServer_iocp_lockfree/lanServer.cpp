@@ -35,7 +35,7 @@ CLanServer::CLanServer(){
 
 void CLanServer::disconnect(unsigned __int64 sessionID){
 
-	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
+	unsigned short sessionIndex = sessionID & lanServer::SESSION_INDEX_MASK;
 	stSession* session = &_sessionArr[sessionIndex];
 
 	if (session->_callDisconnect == true || session->_released == true) {
@@ -48,7 +48,7 @@ void CLanServer::disconnect(unsigned __int64 sessionID){
 
 void CLanServer::release(stSession* session) {
 
-	unsigned short sessionIndex = session->_sessionID & SESSION_INDEX_MASK;
+	unsigned short sessionIndex = session->_sessionID & lanServer::SESSION_INDEX_MASK;
 
 	if (InterlockedCompareExchange((UINT*)&session->_ioCnt, 1, 0) != 0) {
 		return;
@@ -84,7 +84,7 @@ void CLanServer::release(stSession* session) {
 
 bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 	
-	unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
+	unsigned short sessionIndex = sessionID & lanServer::SESSION_INDEX_MASK;
 	stSession* session = &_sessionArr[sessionIndex];
 
 	if (session->_released == true || session->_sessionID != sessionID) {
@@ -98,7 +98,7 @@ bool CLanServer::sendPacket(unsigned __int64 sessionID, CPacketPtr_Lan packet){
 	packet.setHeader();
 	sendQueue->push(packet);
 	
-	sendPost(session);
+ 	sendPost(session);
 	
 
 	if (InterlockedDecrement16((SHORT*)&session->_ioCnt) == 0) {
@@ -126,19 +126,14 @@ unsigned CLanServer::completionStatusFunc(void *args){
 			break;			
 		}
 		
-		unsigned short sessionIndex = (unsigned short)(sessionID & SESSION_INDEX_MASK);
+		unsigned short sessionIndex = (unsigned short)(sessionID & lanServer::SESSION_INDEX_MASK);
 		stSession* session = &server->_sessionArr[sessionIndex];
 
 		InterlockedIncrement16((SHORT*)&session->_ioCnt);
 
 		do {
 
-			if(sessionID != session->_sessionID || session->_released == true){
-				break;
-			}
-
-			if(transferred == 0){
-				server->disconnect(sessionID);
+			if(sessionID != session->_sessionID || session->_released == true || session->_callDisconnect == true){
 				break;
 			}
 
@@ -263,6 +258,7 @@ unsigned CLanServer::acceptFunc(void* args){
 			stSession* session = &sessionArr[sessionIndex];
 
 			InterlockedIncrement((LONG*)&server->_acceptCnt);
+			server->_acceptTotal += 1;
 
 			unsigned __int64 sessionID = session->_sessionID;
 			unsigned __int64 sessionUseCnt = 0;
@@ -282,7 +278,7 @@ unsigned CLanServer::acceptFunc(void* args){
 
 			} else {
 				// 세션 재사용
-				sessionUseCnt = sessionID & SESSION_ALLOC_COUNT_MASK;
+				sessionUseCnt = sessionID & lanServer::SESSION_ALLOC_COUNT_MASK;
 
 			}
 			
@@ -390,7 +386,7 @@ void CLanServer::sendPost(stSession* session){
 
 	unsigned int usedSize = sendQueue->getSize();
 	wsaNum = usedSize;
-	wsaNum = min(wsaNum, MAX_PACKET);
+	wsaNum = min(wsaNum, lanServer::MAX_PACKET);
 	/////////////////////////////////////////////////////////
 
 	if (wsaNum == 0) {
@@ -418,7 +414,7 @@ void CLanServer::sendPost(stSession* session){
 	/////////////////////////////////////////////////////////
 	// packet을 wsaBuf로 복사
 	/////////////////////////////////////////////////////////
-	WSABUF wsaBuf[MAX_PACKET];
+	WSABUF wsaBuf[lanServer::MAX_PACKET];
 	session->_packetCnt = wsaNum;
 	int packetNum = wsaNum;
 
@@ -601,19 +597,19 @@ void CLanServer::checkCompletePacket(stSession* session, CRingBuffer* recvBuffer
 	unsigned __int64 sessionID = session->_sessionID;
 	unsigned int usedSize = recvBuffer->getUsedSize();
 
-	while(usedSize > sizeof(stHeader)){
+	while(usedSize > sizeof(lanServer::stHeader)){
 		
 		// header 체크
-		stHeader header;
-		recvBuffer->frontBuffer(sizeof(stHeader), (char*)&header);
+		lanServer::stHeader header;
+		recvBuffer->frontBuffer(sizeof(lanServer::stHeader), (char*)&header);
 
 		int payloadSize = header.size;
-		int packetSize = payloadSize + sizeof(stHeader);
+		int packetSize = payloadSize + sizeof(lanServer::stHeader);
 
 		// 패킷이 recvBuffer에 완성되었다면
 		if(usedSize >= packetSize){
 			
-			recvBuffer->popBuffer(sizeof(stHeader));
+			recvBuffer->popBuffer(sizeof(lanServer::stHeader));
 
 			CPacketPtr_Lan packet;
 
@@ -622,10 +618,10 @@ void CLanServer::checkCompletePacket(stSession* session, CRingBuffer* recvBuffer
 
 			recvBuffer->popBuffer(payloadSize);
 			
-			unsigned short sessionIndex = sessionID & SESSION_INDEX_MASK;
+			unsigned short sessionIndex = sessionID & lanServer::SESSION_INDEX_MASK;
 			stSession* session = &_sessionArr[sessionIndex];
 
-			packet.moveFront(sizeof(stHeader));
+			packet.moveFront(sizeof(lanServer::stHeader));
 
 			InterlockedIncrement((LONG*)&_recvCnt);
 			onRecv(sessionID, packet);
@@ -718,7 +714,7 @@ CLanServer::stSession::stSession(unsigned int sendQueueSize, unsigned int recvBu
 
 	ZeroMemory(&_sendOverlapped, sizeof(OVERLAPPED));
 	ZeroMemory(&_recvOverlapped, sizeof(OVERLAPPED));
-	_packets = (CPacketPointer*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(CPacketPointer) * MAX_PACKET);
+	_packets = (CPacketPointer*)HeapAlloc(_heap, HEAP_ZERO_MEMORY, sizeof(CPacketPointer) * lanServer::MAX_PACKET);
 	_packetCnt = 0;
 
 }

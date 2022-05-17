@@ -61,6 +61,8 @@ public:
 	void frontSetZero();
 	void rearSetZero();
 
+	void clear();
+
 	inline char* getFrontPtr(){
 		return _buffer + _front;
 	}
@@ -71,6 +73,13 @@ public:
 		return _buffer;
 	}
 	
+	int getRear() {
+		return _rear;
+	}
+	int getFront() {
+		return _front;
+	}
+
 	void resize(unsigned int cap, bool writeFile = true);
 
 private:
@@ -81,8 +90,5 @@ private:
 	unsigned int _rear;
 
 	static int _resizeLogCount;
-
-	static HANDLE _heap;
-	static unsigned int _heapUseCount;
 
 };

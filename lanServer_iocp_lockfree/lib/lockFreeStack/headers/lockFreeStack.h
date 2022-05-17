@@ -47,26 +47,6 @@ private:
 	unsigned int _size;
 
 	CObjectFreeListTLS<stNode> _nodeFreeList;
-	
-	struct stLogLine{
-
-		stLogLine(){
-			_logCnt = 0;
-			_code = 0;
-			_top = nullptr;
-			_topNode = nullptr;
-			_newNode = nullptr;
-		}
-		
-		int _logCnt;
-		int _code;
-		void* _top;
-		stNode* _topNode;
-		stNode* _newNode;
-	};
-
-	stLogLine _logLine[65536];
-	int _logCnt;
 
 };
  
@@ -87,7 +67,7 @@ CLockFreeStack<T>::~CLockFreeStack(){
 template <typename T>
 void CLockFreeStack<T>::push(T data){
 	
-	stNode* newNode = _nodeFreeList.allocObject();
+	stNode* newNode = _nodeFreeList.allocObjectTLS();
 	newNode->_data = data;
 	
 	void* newNodePtr;
@@ -130,7 +110,7 @@ bool CLockFreeStack<T>::pop(T* data){
 	
 	*data = topNode->_data;
 
-	_nodeFreeList.freeObject(topNode);
+	_nodeFreeList.freeObjectTLS(topNode);
 
 	return true;
 }
